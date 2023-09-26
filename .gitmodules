@@ -1,0 +1,3 @@
+[submodule "vae"]
+	path = vae
+	url = https://github.com/chengzegang/vae.git
