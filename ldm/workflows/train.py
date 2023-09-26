@@ -175,6 +175,12 @@ class LDMTrainer(object):
             .to(self.device)
             .to(memory_format=torch.channels_last)
         )
+        for layer in denoiser.encoder.layers:
+            layer._org_forward_impl = layer.forward
+            layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
+        for layer in denoiser.decoder.layers:
+            layer._org_forward_impl = layer.forward
+            layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
         for layer in denoiser.layers:
             layer._org_forward_impl = layer.forward
             layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
