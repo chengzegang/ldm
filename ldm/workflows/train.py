@@ -171,22 +171,26 @@ class LDMTrainer(object):
         )
         vae.to(self.device).to(memory_format=torch.channels_last)
         denoiser = (
-            models.Transformer2d(**config["denoiser"])
+            models.AttentionUNet(**config["denoiser"])
             .to(self.device)
             .to(memory_format=torch.channels_last)
         )
-        for layer in denoiser.encoder.layers:
+        for layer in (
+            denoiser.unet.encoder.layers
+            + denoiser.unet.encoder.attn
+            + denoiser.unet.decoder.attn
+            + denoiser.unet.decoder.layers
+        ):
             layer._org_forward_impl = layer.forward
             layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
-        for layer in denoiser.decoder.layers:
-            layer._org_forward_impl = layer.forward
-            layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
-        for layer in denoiser.layers:
-            layer._org_forward_impl = layer.forward
-            layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
+        denoiser.apply_shortcuts()
         if ckpt is not None:
-            denoiser.eval()
-            denoiser.load_state_dict(ckpt["denoiser"])
+            try:
+                denoiser.eval()
+                denoiser.load_state_dict(ckpt["denoiser"])
+            except Exception:
+                logger.warning(f"rank: {self.rank}: failed to load denoiser")
+                pass
         scheduler = diffusion.LinearScheduler(**config["diffusion"])
         sampler = diffusion.DDPMSampler(scheduler, **config["diffusion"])
         self.model = diffusion.Diffusion(vae, clip, denoiser, scheduler, sampler)

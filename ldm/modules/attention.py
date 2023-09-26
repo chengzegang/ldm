@@ -81,3 +81,23 @@ class QuantAttentionLayer2d(QuantAttentionLayer):
         return (
             super().forward(x.flatten(2).transpose(-1, -2)).transpose(-1, -2).view_as(x)
         )
+
+
+class CrossAttentionLayer2d(CrossAttentionLayer):
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        return (
+            super()
+            .forward(x.flatten(2).transpose(-1, -2), y)
+            .transpose(-1, -2)
+            .view_as(x)
+        )
+
+
+class QuantCrossAttentionLayer2d(QuantCrossAttentionLayer):
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        return (
+            super()
+            .forward(x.flatten(2).transpose(-1, -2), y)
+            .transpose(-1, -2)
+            .view_as(x)
+        )
