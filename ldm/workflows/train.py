@@ -1,4 +1,5 @@
 import copy
+from functools import partial
 import glob
 import math
 import os
@@ -21,7 +22,7 @@ from torch.optim.lr_scheduler import ExponentialLR
 from torch.optim.swa_utils import SWALR, AveragedModel
 from torch.utils.data import DataLoader, Dataset, IterableDataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
-
+from torch.utils.checkpoint import checkpoint
 from .. import data, models
 from . import diffusion
 
@@ -174,8 +175,12 @@ class LDMTrainer(object):
             .to(self.device)
             .to(memory_format=torch.channels_last)
         )
+        for layer in denoiser.layers:
+            layer._org_forward_impl = layer.forward
+            layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
         if ckpt is not None:
-            denoiser.load_state_dict(ckpt)
+            denoiser.eval()
+            denoiser.load_state_dict(ckpt["denoiser"])
         scheduler = diffusion.LinearScheduler(**config["diffusion"])
         sampler = diffusion.DDPMSampler(scheduler, **config["diffusion"])
         self.model = diffusion.Diffusion(vae, clip, denoiser, scheduler, sampler)
@@ -193,6 +198,7 @@ class LDMTrainer(object):
         )
         self.scaler = GradScaler()
 
+    @torch.no_grad()
     def load_checkpoint(self, config: dict) -> dict | None:
         logger.info(f"rank: {self.rank}: load checkpoint")
         latest_ckpt = None
@@ -215,7 +221,9 @@ class LDMTrainer(object):
             return
         return latest_ckpt
 
+    @torch.no_grad()
     def save_checkpoint(self):
+        self.model.denoiser.eval()
         if self.rank == 0:
             torch.save(
                 {

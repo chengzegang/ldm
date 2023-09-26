@@ -1,12 +1,12 @@
 denoiser:
     latent_size: 64
-    hidden_size: 512
+    hidden_size: 768
     num_layers: 12
     clip_emb_size: 768
 diffusion:
     total_steps: 1000
     beta_min: 0.00001
-    beta_max: 0.02
+    beta_max: 0.002
     step_interval: 10
 
 optimizer:
@@ -31,7 +31,7 @@ dataloader:
 train:
     total_epochs: 100
     save_every: 100
-    swa_start: 10
+    swa_start: -1
     swa_anneal_steps: 10000
     log_dir: logs/imagenet
     max_kl_weight: 1
