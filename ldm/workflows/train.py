@@ -228,7 +228,7 @@ class LDMTrainer(object):
             torch.save(
                 {
                     "denoiser": consume_pattern(
-                        self.model.denoiser.state_dict(), "module."
+                        self.model.denoiser.state_dict(), "_org_mod."
                     ),
                     "step": self.step,
                     "epoch": self.epoch,
