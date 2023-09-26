@@ -1,0 +1,40 @@
+denoiser:
+    latent_size: 64
+    hidden_size: 512
+    num_layers: 12
+    clip_emb_size: 768
+diffusion:
+    total_steps: 1000
+    beta_min: 0.00001
+    beta_max: 0.02
+    step_interval: 10
+
+optimizer:
+    lr: 5.0e-5
+    weight_decay: 1.0e-5
+    betas: [0.9, 0.96]
+
+scheduler:
+    lr_decay: 0.99999
+    warmup_steps: 0
+
+dataset:
+    name: image_folder
+    root: /mnt/f/datasets/imagenet
+    image_size: 256
+
+dataloader:
+    batch_size: 4
+    num_workers: 8
+    shuffle: true
+
+train:
+    total_epochs: 100
+    save_every: 100
+    swa_start: 10
+    swa_anneal_steps: 10000
+    log_dir: logs/imagenet
+    max_kl_weight: 1
+    min_kl_weight: 0.1
+    kl_annealing_steps: 10000
+    accumulate_grad_every: 1
