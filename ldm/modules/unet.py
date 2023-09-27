@@ -1,8 +1,10 @@
 from typing import List, Optional
 
 from torch import Tensor, nn
-from .attention import AttentionLayer2d, QuantCrossAttentionLayer2d
-from .convolutions import ResidualBlock, QuantConvTranspose2d, QuantConv2d
+from .attention import (
+    CrossAttentionLayer2d,
+)
+from .convolutions import ResidualBlock
 import torch
 from torch import fx
 
@@ -17,9 +19,9 @@ class ConvDown(nn.Module):
     ):
         super().__init__()
         self.proj = nn.Linear(cond_size, in_channels)
-        self.attn = QuantCrossAttentionLayer2d(in_channels, 64)
+        self.attn = CrossAttentionLayer2d(in_channels, 64)
         self.res = ResidualBlock(in_channels, out_channels, eps)
-        self.down = QuantConv2d(out_channels, out_channels, kernel_size=2, stride=2)
+        self.down = nn.Conv2d(out_channels, out_channels, kernel_size=2, stride=2)
 
     def forward(self, x: Tensor, cond: Tensor) -> Tensor:
         cond = self.proj(cond)
@@ -39,9 +41,9 @@ class ConvUp(nn.Module):
     ):
         super().__init__()
         self.proj = nn.Linear(cond_size, in_channels)
-        self.merge = QuantConv2d(in_channels * 2, in_channels, kernel_size=1)
-        self.attn = QuantCrossAttentionLayer2d(in_channels, 64)
-        self.up = QuantConvTranspose2d(
+        self.merge = nn.Conv2d(in_channels * 2, in_channels, kernel_size=1)
+        self.attn = CrossAttentionLayer2d(in_channels, 64)
+        self.up = nn.ConvTranspose2d(
             in_channels,
             out_channels,
             kernel_size=2,
@@ -73,20 +75,20 @@ class UNetEncoder(nn.Module):
         self.channels = channels
         self.latent_size = latent_size
         self.layers = nn.ModuleList()
-        self.in_conv = QuantConv2d(in_channels, channels[0], kernel_size=1)
+        self.in_conv = nn.Conv2d(in_channels, channels[0], kernel_size=1)
         for i in range(len(channels) - 1):
             self.layers.append(ConvDown(channels[i], hidden_size, channels[i + 1], eps))
-        self.pre_attn_conv = QuantConv2d(channels[-1], hidden_size, kernel_size=1)
+        self.pre_attn_conv = nn.Conv2d(channels[-1], hidden_size, kernel_size=1)
         self.attn = nn.ModuleList(
             [
-                QuantCrossAttentionLayer2d(
+                CrossAttentionLayer2d(
                     hidden_size,
                     128,
                 )
                 for _ in range(num_transformer_layers)
             ]
         )
-        self.out_conv = QuantConv2d(hidden_size, latent_size, kernel_size=1)
+        self.out_conv = nn.Conv2d(hidden_size, latent_size, kernel_size=1)
 
     def forward(self, x: Tensor, cond: Tensor) -> List[Tensor]:
         x = self.in_conv(x)
@@ -115,10 +117,10 @@ class UNetDecoder(nn.Module):
         super().__init__()
         self.out_channels = out_channels
         channels = channels[::-1]
-        self.in_conv = QuantConv2d(latent_size, hidden_size, kernel_size=1)
+        self.in_conv = nn.Conv2d(latent_size, hidden_size, kernel_size=1)
         self.attn = nn.ModuleList(
             [
-                QuantCrossAttentionLayer2d(
+                CrossAttentionLayer2d(
                     hidden_size,
                     128,
                 )
@@ -126,7 +128,7 @@ class UNetDecoder(nn.Module):
             ]
         )
         self.layers = nn.ModuleList()
-        self.post_attn_conv = QuantConv2d(hidden_size, channels[0], kernel_size=1)
+        self.post_attn_conv = nn.Conv2d(hidden_size, channels[0], kernel_size=1)
         for i in range(len(channels) - 1):
             self.layers.append(ConvUp(channels[i], hidden_size, channels[i + 1], eps))
         self.out_norm = nn.InstanceNorm2d(channels[-1], eps=eps)

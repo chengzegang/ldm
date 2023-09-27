@@ -218,13 +218,13 @@ class QuantConv3x3(_QuantConvNxN):
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, eps: float = 1e-5):
         super().__init__()
-        self.conv1 = QuantConv3x3(in_channels, out_channels, eps=eps)
-        self.conv2 = QuantConv3x3(out_channels, out_channels, eps=eps)
-        self.conv3 = QuantConv2d(out_channels, out_channels, 1, bias=False)
+        self.conv1 = Conv3x3(in_channels, out_channels, eps=eps)
+        self.conv2 = Conv3x3(out_channels, out_channels, eps=eps)
+        self.conv3 = nn.Conv2d(out_channels, out_channels, 1, bias=False)
         self.shortcut = (
             nn.Identity()
             if in_channels == out_channels
-            else QuantConv2d(in_channels, out_channels, 1, bias=False)
+            else nn.Conv2d(in_channels, out_channels, 1, bias=False)
         )
 
     def forward(self, x: Tensor) -> Tensor:

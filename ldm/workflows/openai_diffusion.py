@@ -240,6 +240,7 @@ class GaussianDiffusion:
             / (1.0 - self.alphas_cumprod)
         )
 
+    @th.autocast("cuda", enabled=False)
     def q_mean_variance(self, x_start, t):
         """
         Get the distribution q(x_t | x_0).
@@ -257,6 +258,7 @@ class GaussianDiffusion:
         )
         return mean, variance, log_variance
 
+    @th.autocast("cuda", enabled=False)
     def q_sample(self, x_start, t, noise=None):
         """
         Diffuse the data for a given number of diffusion steps.
@@ -277,6 +279,7 @@ class GaussianDiffusion:
             * noise
         )
 
+    @th.autocast("cuda", enabled=False)
     def q_posterior_mean_variance(self, x_start, x_t, t):
         """
         Compute the mean and variance of the diffusion posterior:
@@ -329,38 +332,44 @@ class GaussianDiffusion:
 
         B, C = x.shape[:2]
         assert t.shape == (B,)
-        model_output = model(x, self._scale_timesteps(t), **model_kwargs)
 
-        if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
-            assert model_output.shape == (B, C * 2, *x.shape[2:])
-            model_output, model_var_values = th.split(model_output, C, dim=1)
-            if self.model_var_type == ModelVarType.LEARNED:
-                model_log_variance = model_var_values
-                model_variance = th.exp(model_log_variance)
+        model_output = model(x, self._scale_timesteps(t), **model_kwargs)
+        with th.autocast("cuda", enabled=False):
+            if self.model_var_type in [
+                ModelVarType.LEARNED,
+                ModelVarType.LEARNED_RANGE,
+            ]:
+                assert model_output.shape == (B, C * 2, *x.shape[2:])
+                model_output, model_var_values = th.split(model_output, C, dim=1)
+                if self.model_var_type == ModelVarType.LEARNED:
+                    model_log_variance = model_var_values
+                    model_variance = th.exp(model_log_variance)
+                else:
+                    min_log = _extract_into_tensor(
+                        self.posterior_log_variance_clipped, t, x.shape
+                    )
+                    max_log = _extract_into_tensor(np.log(self.betas), t, x.shape)
+                    # The model_var_values is [-1, 1] for [min_var, max_var].
+                    frac = (model_var_values + 1) / 2
+                    model_log_variance = frac * max_log + (1 - frac) * min_log
+                    model_variance = th.exp(model_log_variance)
             else:
-                min_log = _extract_into_tensor(
-                    self.posterior_log_variance_clipped, t, x.shape
+                model_variance, model_log_variance = {
+                    # for fixedlarge, we set the initial (log-)variance like so
+                    # to get a better decoder log likelihood.
+                    ModelVarType.FIXED_LARGE: (
+                        np.append(self.posterior_variance[1], self.betas[1:]),
+                        np.log(np.append(self.posterior_variance[1], self.betas[1:])),
+                    ),
+                    ModelVarType.FIXED_SMALL: (
+                        self.posterior_variance,
+                        self.posterior_log_variance_clipped,
+                    ),
+                }[self.model_var_type]
+                model_variance = _extract_into_tensor(model_variance, t, x.shape)
+                model_log_variance = _extract_into_tensor(
+                    model_log_variance, t, x.shape
                 )
-                max_log = _extract_into_tensor(np.log(self.betas), t, x.shape)
-                # The model_var_values is [-1, 1] for [min_var, max_var].
-                frac = (model_var_values + 1) / 2
-                model_log_variance = frac * max_log + (1 - frac) * min_log
-                model_variance = th.exp(model_log_variance)
-        else:
-            model_variance, model_log_variance = {
-                # for fixedlarge, we set the initial (log-)variance like so
-                # to get a better decoder log likelihood.
-                ModelVarType.FIXED_LARGE: (
-                    np.append(self.posterior_variance[1], self.betas[1:]),
-                    np.log(np.append(self.posterior_variance[1], self.betas[1:])),
-                ),
-                ModelVarType.FIXED_SMALL: (
-                    self.posterior_variance,
-                    self.posterior_log_variance_clipped,
-                ),
-            }[self.model_var_type]
-            model_variance = _extract_into_tensor(model_variance, t, x.shape)
-            model_log_variance = _extract_into_tensor(model_log_variance, t, x.shape)
 
         def process_xstart(x):
             if denoised_fn is not None:
@@ -397,6 +406,7 @@ class GaussianDiffusion:
             "pred_xstart": pred_xstart,
         }
 
+    @th.autocast("cuda", enabled=False)
     def _predict_xstart_from_eps(self, x_t, t, eps):
         assert x_t.shape == eps.shape
         return (
@@ -404,6 +414,7 @@ class GaussianDiffusion:
             - _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * eps
         )
 
+    @th.autocast("cuda", enabled=False)
     def _predict_xstart_from_xprev(self, x_t, t, xprev):
         assert x_t.shape == xprev.shape
         return (  # (xprev - coef2*x_t) / coef1
@@ -414,17 +425,20 @@ class GaussianDiffusion:
             * x_t
         )
 
+    @th.autocast("cuda", enabled=False)
     def _predict_eps_from_xstart(self, x_t, t, pred_xstart):
         return (
             _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
             - pred_xstart
         ) / _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
 
+    @th.autocast("cuda", enabled=False)
     def _scale_timesteps(self, t):
         if self.rescale_timesteps:
             return t.float() * (1000.0 / self.num_timesteps)
         return t
 
+    @th.autocast("cuda", enabled=False)
     def condition_mean(self, cond_fn, p_mean_var, x, t, model_kwargs=None):
         """
         Compute the mean for the previous step, given a function cond_fn that
@@ -440,6 +454,7 @@ class GaussianDiffusion:
         )
         return new_mean
 
+    @th.autocast("cuda", enabled=False)
     def condition_score(self, cond_fn, p_mean_var, x, t, model_kwargs=None):
         """
         Compute what the p_mean_variance output would have been, should the
@@ -499,16 +514,19 @@ class GaussianDiffusion:
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        noise = th.randn_like(x)
-        nonzero_mask = (
-            (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
-        )  # no noise when t == 0
-        if cond_fn is not None:
-            out["mean"] = self.condition_mean(
-                cond_fn, out, x, t, model_kwargs=model_kwargs
+        with th.autocast("cuda", enabled=False):
+            noise = th.randn_like(x)
+            nonzero_mask = (
+                (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
+            )  # no noise when t == 0
+            if cond_fn is not None:
+                out["mean"] = self.condition_mean(
+                    cond_fn, out, x, t, model_kwargs=model_kwargs
+                )
+            sample = (
+                out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
             )
-        sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
-        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+            return {"sample": sample, "pred_xstart": out["pred_xstart"]}
 
     def p_sample_loop(
         self,
@@ -797,21 +815,22 @@ class GaussianDiffusion:
         out = self.p_mean_variance(
             model, x_t, t, clip_denoised=clip_denoised, model_kwargs=model_kwargs
         )
-        kl = normal_kl(
-            true_mean, true_log_variance_clipped, out["mean"], out["log_variance"]
-        )
-        kl = mean_flat(kl) / np.log(2.0)
+        with th.autocast("cuda", enabled=False):
+            kl = normal_kl(
+                true_mean, true_log_variance_clipped, out["mean"], out["log_variance"]
+            )
+            kl = mean_flat(kl) / np.log(2.0)
 
-        decoder_nll = -discretized_gaussian_log_likelihood(
-            x_start, means=out["mean"], log_scales=0.5 * out["log_variance"]
-        )
-        assert decoder_nll.shape == x_start.shape
-        decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
+            decoder_nll = -discretized_gaussian_log_likelihood(
+                x_start, means=out["mean"], log_scales=0.5 * out["log_variance"]
+            )
+            assert decoder_nll.shape == x_start.shape
+            decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
 
-        # At the first timestep return the decoder NLL,
-        # otherwise return KL(q(x_{t-1}|x_t,x_0) || p(x_{t-1}|x_t))
-        output = th.where((t == 0), decoder_nll, kl)
-        return {"output": output, "pred_xstart": out["pred_xstart"]}
+            # At the first timestep return the decoder NLL,
+            # otherwise return KL(q(x_{t-1}|x_t,x_0) || p(x_{t-1}|x_t))
+            output = th.where((t == 0), decoder_nll, kl)
+            return {"output": output, "pred_xstart": out["pred_xstart"]}
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
@@ -888,6 +907,7 @@ class GaussianDiffusion:
 
         return terms
 
+    @th.autocast("cuda", enabled=False)
     def _prior_bpd(self, x_start):
         """
         Get the prior KL term for the variational lower-bound, measured in
@@ -905,7 +925,7 @@ class GaussianDiffusion:
             mean1=qt_mean, logvar1=qt_log_variance, mean2=0.0, logvar2=0.0
         )
         return mean_flat(kl_prior) / np.log(2.0)
-
+    
     def calc_bpd_loop(self, model, x_start, clip_denoised=True, model_kwargs=None):
         """
         Compute the entire variational lower-bound, measured in bits-per-dim,

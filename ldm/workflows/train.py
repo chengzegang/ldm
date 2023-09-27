@@ -278,21 +278,22 @@ class LDMTrainer(object):
 
     def backward_step(self, loss: Tensor):
         self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         self.scaler.step(self.optimizer)
-        self.scaler.update()
         if (
             self.config["train"]["swa_start"] > 0
             and self.step >= self.config["train"]["swa_start"]
         ):
-            self.swa_scheduler.step()
             self.ema_model.update_parameters(self.model)
+            self.swa_scheduler.step()
         else:
             self.scheduler.step()
+        self.scaler.update()
         self.step += 1
 
     def diffusion_forward(self, x: Tensor, mask: Tensor, t: Tensor) -> dict:
-        with torch.autocast("cuda", self.dtype):
-            loss = self.model(x, mask, t)
+        loss = self.model(x, mask, t, dtype=self.dtype)
         self.backward_step(loss)
         return loss
 

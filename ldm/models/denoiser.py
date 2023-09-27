@@ -23,36 +23,40 @@ class AttentionUNet(nn.Module):
         self.latent_size = clip_emb_size
         self.clip_emb_size = clip_emb_size
         self.layers = nn.ModuleList()
-        self.latent_emb = QuantConv2d(in_channels * 2, in_channels, kernel_size=1)
-        self.clip_emb = nn.Linear(clip_emb_size, clip_emb_size)
-        self.time_emb = nn.Embedding(10000, clip_emb_size)
+        self.latent_emb = nn.Conv2d(in_channels * 2, clip_emb_size, kernel_size=1)
+        self.cond_emb = nn.Linear(clip_emb_size, clip_emb_size)
+        self.time_emb = nn.Linear(1, clip_emb_size)
+        self.t2l_emb = nn.Conv2d(clip_emb_size * 2, clip_emb_size, 3, padding=1)
         self.unet = UNet(
-            in_channels,
-            out_channels,
+            clip_emb_size,
+            clip_emb_size,
             channels,
             clip_emb_size,
             clip_emb_size,
             num_transformer_layers=num_transformer_layers,
         )
-        self.time_mlp = nn.Sequential()
-        for _ in range(3):
-            self.time_mlp.append(nn.Linear(clip_emb_size, clip_emb_size))
-            self.time_mlp.append(nn.LayerNorm(clip_emb_size))
-            self.time_mlp.append(nn.SiLU(True))
+        self.conv_out = nn.Conv2d(clip_emb_size, out_channels, 1)
 
     def forward(
         self,
         latent: Tensor,
         t: Tensor,
-        mask: Tensor,
         cond: Tensor,
+        mask: Tensor,
     ) -> Tensor:
         latent = torch.cat([latent, mask], dim=1)
-        latent_emb = self.latent_emb(latent)
-        cond_emb = self.clip_emb(cond)
-        t_emb = self.time_emb(t.long()).unsqueeze(1)
-        t_emb = self.time_mlp(t_emb)
-        cond_emb = torch.cat([cond_emb, t_emb], dim=1)
-        latent = self.unet(latent_emb, cond_emb)
+        cond_emb = self.cond_emb(cond)
+        t_emb = self.time_emb(torch.log(1 + t.unsqueeze(-1).type_as(latent)))
 
+        latent_emb = self.latent_emb(latent)
+        latent_emb = self.t2l_emb(
+            torch.cat(
+                [latent_emb, t_emb[:, :, None, None].expand_as(latent_emb)], dim=1
+            )
+        )
+
+        cond_emb = torch.cat([cond_emb, t_emb.unsqueeze(1)], dim=1)
+
+        latent = self.unet(latent_emb, cond_emb)
+        latent = self.conv_out(latent)
         return latent
