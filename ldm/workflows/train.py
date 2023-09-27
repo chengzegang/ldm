@@ -138,10 +138,6 @@ class LDMTrainer(object):
         else:
             return self.scheduler.get_last_lr()[0]
 
-    @property
-    def _kl_weight(self):
-        return self._kl_weights[self.step % len(self._kl_weights)]
-
     def setup_env(self, config: dict):
         if "ddp" in config and config["ddp"]:
             dist.init_process_group(backend="nccl")
@@ -183,7 +179,6 @@ class LDMTrainer(object):
         ):
             layer._org_forward_impl = layer.forward
             layer.forward = partial(checkpoint, layer.forward, use_reentrant=False)
-        denoiser.apply_shortcuts()
         if ckpt is not None:
             try:
                 denoiser.eval()
@@ -191,15 +186,13 @@ class LDMTrainer(object):
             except Exception:
                 logger.warning(f"rank: {self.rank}: failed to load denoiser")
                 pass
-        scheduler = diffusion.LinearScheduler(**config["diffusion"])
-        sampler = diffusion.DDPMSampler(scheduler, **config["diffusion"])
-        self.model = diffusion.Diffusion(vae, clip, denoiser, scheduler, sampler)
+        self.model = diffusion.Diffusion(vae, clip, denoiser)
 
     def setup_optimizer(self, config: dict):
         logger.info(f"rank: {self.rank}: setup optimizer")
 
         self.optimizer = Adam(
-            self.model.denoiser.parameters(),
+            self.model.model.parameters(),
             **config["optimizer"],
         )
 
@@ -233,12 +226,12 @@ class LDMTrainer(object):
 
     @torch.no_grad()
     def save_checkpoint(self):
-        self.model.denoiser.eval()
+        self.model.eval()
         if self.rank == 0:
             torch.save(
                 {
                     "denoiser": consume_pattern(
-                        self.model.denoiser.state_dict(), "_org_mod."
+                        self.model.model.state_dict(), "_org_mod."
                     ),
                     "step": self.step,
                     "epoch": self.epoch,
@@ -299,42 +292,44 @@ class LDMTrainer(object):
 
     def diffusion_forward(self, x: Tensor, mask: Tensor, t: Tensor) -> dict:
         with torch.autocast("cuda", self.dtype):
-            output = self.model(x, mask, t)
-        self.backward_step(output["loss"])
-        return output
+            loss = self.model(x, mask, t)
+        self.backward_step(loss)
+        return loss
 
     @torch.no_grad()
-    def eval_step(self, image: Tensor, output: dict) -> dict:
+    def eval_step(self, image: Tensor) -> dict:
         self.model.eval()
+        with torch.autocast("cuda", self.dtype):
+            output = self.model.eval_forward(
+                image.to(self.device).contiguous(memory_format=torch.channels_last),
+                torch.zeros_like(image)
+                .to(self.device)
+                .contiguous(memory_format=torch.channels_last),
+                torch.randint(
+                    0, self.model.train_steps, (image.shape[0],), device=self.device
+                ),
+            )
         self.save_checkpoint()
-        fig = show_triple(image[:3], output["noised"][:3], output["output"][:3])
+        fig = show_triple(image[:3], output["noised"][:3], output["denoised"][:3])
         fig.savefig(os.path.join(self.config["train"]["log_dir"], "result.png"))
         plt.close(fig)
 
     def train_step(self, image: Tensor):
-        output = None
         self.model.train()
-        output = self.diffusion_forward(
+        loss = self.diffusion_forward(
             image.to(self.device).contiguous(memory_format=torch.channels_last),
             torch.zeros_like(image)
             .to(self.device)
             .contiguous(memory_format=torch.channels_last),
             torch.randint(
-                0, len(self.model.scheduler), (image.shape[0],), device=self.device
+                0, self.model.train_steps, (image.shape[0],), device=self.device
             ),
         )
-        return output
+        return loss
 
-    def verbose(self, output: dict):
+    def verbose(self, loss: Tensor):
         if self.rank == 0:
-            desc = f"Epoch: {self.epoch}, Step: {self.step}, LR: {self.lr:.4e}"
-            for key, value in output.items():
-                key = key[0].upper() + key[1:]
-                if isinstance(value, Tensor):
-                    if torch.numel(value) == 1:
-                        desc += f", {key}: {value.item():.4f}"
-                else:
-                    desc += f", {key}: {value:.4f}"
+            desc = f"Epoch: {self.epoch}, Step: {self.step}, LR: {self.lr:.4e}, Loss: {loss.item():.6f}"
             logger.info(desc)
 
     def start(self):
@@ -347,10 +342,10 @@ class LDMTrainer(object):
                     memory_format=torch.channels_last
                 )
 
-                output = self.train_step(image)
-                self.verbose(output)
+                loss = self.train_step(image)
+                self.verbose(loss)
                 if (
-                    torch.isfinite(output["loss"])
+                    torch.isfinite(loss)
                     and self.step % self.config["train"]["save_every"] == 0
                 ):
-                    self.eval_step(image, output)
+                    self.eval_step(image)
